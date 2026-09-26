@@ -3,7 +3,12 @@
   "suite": "replay",
   "tier": "rust-product-integration",
   "targets": [
+    "eval_batch_contract",
+    "eval_cli_contract",
     "evaluation_design_weighted_contract",
+    "evaluation_manifest_semantics",
+    "jev_rerank",
+    "jev_wide",
     "ledger_exposure_lifecycle_contract",
     "ledger_migration_contract",
     "ledger_paired_correction_contract",
@@ -209,7 +214,23 @@
         "evaluation_design_weighted_contract::test_tiny_population_exact_enumeration_unbiasedness_and_coverage",
         "evaluation_design_weighted_contract::test_missing_labels_bounds_and_conservative_upper_assignment",
         "evaluation_design_weighted_contract::test_full_census_zero_sampling_variance",
-        "evaluation_design_weighted_contract::test_design_weighted_ratio_estimator"
+        "evaluation_design_weighted_contract::test_design_weighted_ratio_estimator",
+        "evaluation_design_weighted_contract::weights_that_sum_to_one_but_are_not_population_shares_are_refused",
+        "eval_batch_contract::timeouts_cannot_shrink_the_loss_and_always_abstaining_is_not_a_good_score",
+        "eval_batch_contract::the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases",
+        "eval_batch_contract::baselines_keep_an_operational_failure_in_the_cohort_at_loss_two",
+        "eval_batch_contract::baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers",
+        "eval_batch_contract::a_case_any_policy_cannot_score_leaves_every_policy",
+        "eval_batch_contract::robustness_variants_report_decision_changes_on_leftover_budget",
+        "eval_batch_contract::the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough",
+        "eval_cli_contract::labeled_frame_scores_the_frozen_loss_and_keeps_unjudged_cases_visible",
+        "eval_cli_contract::a_supplied_seed_reproduces_a_diagnostic_selection_without_design_weights",
+        "eval_cli_contract::a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss",
+        "evaluation_manifest_semantics::supported_designs_replay_exact_membership_and_order",
+        "evaluation_manifest_semantics::supplied_seed_cannot_acquire_probability_design_by_resealing",
+        "jev_wide::candidate_order_and_handle_assignment_cannot_change_the_decision",
+        "jev_wide::a_real_skill_identity_change_changes_the_request",
+        "jev_rerank::shortlist_order_and_handle_assignment_cannot_change_rerank_estimates"
       ]
     },
     {

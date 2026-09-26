@@ -1432,7 +1432,19 @@ member_beads = ["sr-roadmap-l1i.6.28"]
 phase = "P5"
 title = "Prove evaluation accounting, sampling math and robustness reports"
 unit_property_tests = [
-    "tests/evaluation_design_weighted_contract.rs::test_design_weighted_ratio_estimator"
+    "tests/evaluation_design_weighted_contract.rs::test_design_weighted_ratio_estimator",
+    "tests/evaluation_design_weighted_contract.rs::test_exact_900_100_frame_reproduction",
+    "tests/evaluation_design_weighted_contract.rs::weights_that_sum_to_one_but_are_not_population_shares_are_refused",
+    "tests/eval_batch_contract.rs::timeouts_cannot_shrink_the_loss_and_always_abstaining_is_not_a_good_score",
+    "tests/eval_batch_contract.rs::the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases",
+    "tests/eval_batch_contract.rs::baselines_keep_an_operational_failure_in_the_cohort_at_loss_two",
+    "tests/eval_batch_contract.rs::a_case_any_policy_cannot_score_leaves_every_policy",
+    "tests/eval_batch_contract.rs::robustness_variants_report_decision_changes_on_leftover_budget",
+    "tests/eval_cli_contract.rs::a_supplied_seed_reproduces_a_diagnostic_selection_without_design_weights",
+    "tests/eval_cli_contract.rs::a_fresh_os_seed_is_recorded_and_supports_design_weighted_loss",
+    "tests/evaluation_manifest_semantics.rs::supported_designs_replay_exact_membership_and_order",
+    "tests/jev_wide.rs::candidate_order_and_handle_assignment_cannot_change_the_decision",
+    "tests/jev_rerank.rs::shortlist_order_and_handle_assignment_cannot_change_rerank_estimates"
 ]
 e2e_suite = "replay"
 e2e_cases = ["loss-denominators-exact"]
