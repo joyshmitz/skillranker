@@ -402,6 +402,7 @@ request or runtime limit is reached and reports unfinished cases.
 | `--online` | Off | With `--labels`, rank each case's request context fresh against the current roster when network access is separately authorized |
 | `--max-requests N` | Required for live runs | Maximum HTTP attempts across the batch, including retries |
 | `--max-runtime-ms N` | `600000` | Overall batch deadline, in addition to per-case deadlines |
+| `--robustness` | Off | Also rank whitespace, long-distraction and hostile-instruction variants of each judged case on the budget left after the main rankings, and report decision and coverage changes outside every denominator |
 | `--sample-size N` | Full supplied frame | Select a bounded sample of task-family representatives |
 | `--seed S` | Fresh recorded random seed when sampling | Deterministic diagnostic selection or reproduction of a recorded sample; a fixed seed alone is not probability-sampling evidence |
 | `--explain` | Off | Include equations, substituted values, assumptions, and interpretation in the report |

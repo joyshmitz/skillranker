@@ -249,6 +249,8 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             max_runtime_ms: 40,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -296,6 +298,8 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             max_runtime_ms: 60_000,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -332,6 +336,8 @@ fn a_refused_disclosure_preview_is_never_sent_and_the_preflight_is_frozen_first(
                 max_runtime_ms: 60_000,
                 attempts_per_case: 4,
                 fit_threshold: 0.3,
+                gate_threshold: 0.3,
+                robustness_variants: false,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -413,6 +419,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         admitted: vec!["s_alpha".into(), "s_beta".into()],
         quill_ranked: false,
         lexical: None,
+        lexical_elapsed_ms: 0,
         wide: Some(WideEvidence {
             needs_skill: 0.9,
             none_probability: 0.1,
@@ -439,6 +446,8 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             max_runtime_ms: 60_000,
             attempts_per_case: 4,
             fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -458,13 +467,17 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
                 "pos-2" => (stages(&[], &[]), vec![]),
                 _ => (stages(&[("s_beta", 0.7)], &[("s_beta", 0.8)]), vec![]),
             };
-            // Quill ranks alpha first for pos-1, finds nothing for the no-match
-            // case, and could not run for pos-2.
+            // Quill ranks alpha first for pos-1 and finds nothing for the
+            // other two.
             evidence.lexical = match case.key.case_id.as_str() {
                 "pos-1" => Some(vec!["s_alpha".to_owned(), "s_beta".to_owned()]),
-                "pos-2" => None,
                 _ => Some(Vec::new()),
             };
+            // The no-match case spent 50 ms of its 300 in the evaluation-only
+            // lexical pass, which production latency excludes.
+            if case.key.case_id == "none" {
+                evidence.lexical_elapsed_ms = 50;
+            }
             LiveRankOutcome {
                 decision: if suggested.is_empty() {
                     "abstain"
@@ -556,9 +569,9 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             .iter()
             .any(|note| note.starts_with("quill-only"))
     );
-    // quill-only: pos-1 -> alpha (0), none -> abstain (0); pos-2 not evaluated.
+    // quill-only: pos-1 -> alpha (0), pos-2 lexical miss (1), none -> abstain (0).
     let quill = policy("quill-only");
-    assert_eq!((quill.evaluated_cases, quill.not_evaluated_cases), (2, 1));
+    assert_eq!((quill.evaluated_cases, quill.not_evaluated_cases), (3, 0));
     assert_eq!(
         (
             quill.top1_precision.successes,
@@ -567,7 +580,13 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         (1, 1)
     );
     assert_eq!(quill.needless_suggestion_rate.successes, 0);
-    assert_eq!(quill.mean_loss, Some(0.0));
+    assert_eq!(quill.mean_loss, Some(1.0 / 3.0));
+    // Every policy scored every case: one shared, complete cohort.
+    assert!(baselines.complete);
+    assert_eq!(
+        (baselines.shared_cohort_cases, baselines.excluded_unscorable),
+        (3, 0)
+    );
     assert_eq!(policy("blend").not_evaluated_cases, 0);
     // cookbook-approx: pos-1's top three hold alpha (fit 0.9) and beta; their
     // rerank probabilities tie, broken by ID to alpha (0). pos-2 is gated (1);
@@ -592,6 +611,22 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
         .map(|bin| (bin.pairs, bin.acceptable.successes))
         .collect();
     assert_eq!(counts, [(0, 0), (1, 0), (0, 0), (0, 0), (2, 1)]);
+    // pos-1's wide stage prefers beta while its rerank tie breaks to alpha: a
+    // stage disagreement, queued for review outside every denominator.
+    let queue = report.review_queue.as_ref().unwrap();
+    assert_eq!(queue.denominator_effect, "none");
+    let pos1 = queue
+        .entries
+        .iter()
+        .find(|entry| entry.key.case_id == "pos-1")
+        .expect("pos-1 queued");
+    assert!(
+        serde_json::to_string(&pos1.reasons)
+            .unwrap()
+            .contains("stage-disagreement"),
+        "{:?}",
+        pos1.reasons
+    );
     // Only the blend publishes a list: pos-1's covers alpha, pos-2's is empty.
     let top_k = policy("blend").top_k_coverage.unwrap();
     assert_eq!((top_k.successes, top_k.denominator), (1, 2));
@@ -606,7 +641,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             latency.p99,
             latency.max
         ),
-        (3, 200, 300, 300, 300)
+        (3, 200, 250, 250, 250)
     );
 }
 
@@ -708,6 +743,8 @@ fn context_ablation_ranks_history_cases_twice_within_the_caps() {
                 max_runtime_ms: 60_000,
                 attempts_per_case: 4,
                 fit_threshold: 0.3,
+                gate_threshold: 0.3,
+                robustness_variants: false,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -789,4 +826,494 @@ fn context_ablation_ranks_history_cases_twice_within_the_caps() {
     assert_eq!(report.run_status, skillranker::output::RunStatus::Complete);
     let ablation = report.baselines.unwrap().context_ablation.unwrap();
     assert_eq!((ablation.cases, ablation.skipped_for_budget), (1, 1));
+}
+
+/// Run a live batch over `cases` with every case judged `s_alpha`-positive.
+fn live_run(
+    cases: Vec<skillranker::evaluation::batch::LiveEvaluationCase>,
+    max_requests: usize,
+    rank: impl FnMut(
+        &skillranker::evaluation::batch::LiveEvaluationCase,
+    ) -> skillranker::evaluation::batch::LiveRankOutcome,
+) -> skillranker::evaluation::batch::EvaluationBatchReport {
+    let ids: Vec<String> = cases.iter().map(|case| case.key.case_id.clone()).collect();
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    skillranker::evaluation::batch::execute_live_frame_evaluation(
+        cases,
+        live_labels(&ids),
+        None,
+        &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+        skillranker::evaluation::batch::LiveBatchLimits {
+            max_requests,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: false,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        rank,
+    )
+    .unwrap()
+}
+
+#[test]
+fn baselines_keep_an_operational_failure_in_the_cohort_at_loss_two() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    use skillranker::pipeline::{RerankEvidence, StageEvidence, WideEvidence};
+    // A completed ranking carries every stage's answer, so every policy can
+    // score it; each picks alpha.
+    let answered = StageEvidence {
+        admitted: vec!["s_alpha".into()],
+        lexical: Some(vec!["s_alpha".into()]),
+        wide: Some(WideEvidence {
+            needs_skill: 0.9,
+            none_probability: 0.1,
+            low_need: false,
+            shortlist: vec![("s_alpha".into(), 0.8)],
+            intrinsic_shortlist: vec!["s_alpha".into()],
+        }),
+        rerank: Some(RerankEvidence {
+            none_probability: 0.1,
+            candidates: vec![("s_alpha".into(), 0.8, 0.9)],
+        }),
+        ..StageEvidence::default()
+    };
+    let report = live_run(vec![live_case("a"), live_case("b")], 100, |case| {
+        if case.key.case_id == "a" {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                evidence: Some(answered.clone()),
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("network-failure".into()),
+                http_attempts: 2,
+                evidence: Some(skillranker::pipeline::StageEvidence::default()),
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    // The main report: one hit (0) and one failure (2).
+    assert_eq!(report.loss_summary.operational_failures, 1);
+    let baselines = report.baselines.unwrap();
+    assert_eq!(baselines.operational_failures, 1);
+    assert_eq!(baselines.cases_without_evidence, 0);
+    let blend = baselines
+        .policies
+        .iter()
+        .find(|policy| policy.policy == "blend")
+        .unwrap();
+    // The same cohort: the failure is not dropped, so blend is not perfect.
+    assert_eq!(blend.evaluated_cases, 2);
+    assert_eq!(blend.operational_failures, 1);
+    assert_eq!(blend.mean_loss, Some(1.0));
+    assert_eq!(blend.positive_suggestion_rate.successes, 1);
+    assert_eq!(blend.positive_suggestion_rate.denominator, 2);
+    // A failure is not a relevance abstention.
+    assert_eq!(blend.false_abstention_rate.successes, 0);
+    for policy in &baselines.policies {
+        assert_eq!(policy.operational_failures, 1, "{}", policy.policy);
+    }
+}
+
+#[test]
+fn a_ranking_with_unknown_attempts_is_charged_its_worst_case_against_the_cap() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    // Case "a" ends without a decision document after it may have sent
+    // requests. With 8 requests and 4 per case, "b" still fits; "c" must not.
+    let mut ranked = Vec::new();
+    let report = live_run(
+        vec![live_case("a"), live_case("b"), live_case("c")],
+        8,
+        |case| {
+            ranked.push(case.key.case_id.clone());
+            if case.key.case_id == "a" {
+                LiveRankOutcome {
+                    decision: "unavailable".into(),
+                    error_kind: Some("timeout".into()),
+                    attempts_unknown: true,
+                    ..LiveRankOutcome::default()
+                }
+            } else {
+                LiveRankOutcome {
+                    decision: "ranked".into(),
+                    suggested_skills: vec!["s_alpha".into()],
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            }
+        },
+    );
+    assert_eq!(ranked, ["a", "b"]);
+    assert_eq!(report.accounting.http_attempts, 6);
+    assert_eq!(report.accounting.unknown_usage_attempts, 4);
+    assert_eq!(report.error.as_ref().unwrap().kind, "request-budget");
+    // Honest counterpart: a failure known to have sent nothing costs nothing.
+    let mut ranked = Vec::new();
+    let report = live_run(
+        vec![live_case("a"), live_case("b"), live_case("c")],
+        8,
+        |case| {
+            ranked.push(case.key.case_id.clone());
+            LiveRankOutcome {
+                decision: if case.key.case_id == "a" {
+                    "unavailable"
+                } else {
+                    "ranked"
+                }
+                .into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: if case.key.case_id == "a" { 0 } else { 2 },
+                ..LiveRankOutcome::default()
+            }
+        },
+    );
+    assert_eq!(ranked, ["a", "b", "c"]);
+    assert_eq!(report.accounting.http_attempts, 4);
+}
+
+fn history_case(
+    id: &str,
+    events: Value,
+    current: Value,
+) -> skillranker::evaluation::batch::LiveEvaluationCase {
+    serde_json::from_value(json!({
+        "schema_version": 1,
+        "key": {"frame_id": "f", "family_id": format!("fam-{id}"), "case_id": id,
+                "replicate": 0, "policy_id": "p"},
+        "split": "holdout",
+        "context": {"events": events, "current_request": current}
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_failed_second_arm_scores_loss_two_and_an_event_repeating_the_request_is_not_history() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let cases = vec![
+        history_case(
+            "hist",
+            json!([{"event_id": "e0", "text": "earlier"}]),
+            json!({"event_id": "e1"}),
+        ),
+        // Its only event is the current request itself: single-turn.
+        history_case(
+            "single",
+            json!([{"event_id": "e1", "text": "now"}]),
+            json!({"event_id": "e1"}),
+        ),
+    ];
+    let calls = std::cell::RefCell::new(Vec::new());
+    let report = live_run(cases, 100, |case| {
+        let history = !case.context["events"].as_array().unwrap().is_empty();
+        calls
+            .borrow_mut()
+            .push(format!("{} {}", case.key.case_id, history));
+        if history || case.key.case_id == "single" {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            // The latest-request-only arm of "hist" fails.
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("network-failure".into()),
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    // "single" is never sent twice.
+    assert_eq!(
+        calls.into_inner(),
+        ["hist true", "single true", "hist false"]
+    );
+    let ablation = report.baselines.unwrap().context_ablation.unwrap();
+    assert_eq!((ablation.cases, ablation.arm_failures), (1, 1));
+    assert_eq!(ablation.recent_context.mean_loss, Some(0.0));
+    // The failed arm is not dropped from both arms: it scores loss 2.
+    assert_eq!(ablation.latest_request_only.mean_loss, Some(2.0));
+    assert_eq!(ablation.latest_request_only.operational_failures, 1);
+}
+
+#[test]
+fn a_fatal_error_in_a_second_arm_stops_the_remaining_arms() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let cases = vec![
+        history_case("h1", json!([{"event_id": "e0"}]), json!({"event_id": "e1"})),
+        history_case("h2", json!([{"event_id": "e0"}]), json!({"event_id": "e1"})),
+    ];
+    let calls = std::cell::RefCell::new(Vec::new());
+    let report = live_run(cases, 100, |case| {
+        let history = !case.context["events"].as_array().unwrap().is_empty();
+        calls
+            .borrow_mut()
+            .push(format!("{} {}", case.key.case_id, history));
+        if history {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("authentication".into()),
+                http_attempts: 1,
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    // The first second arm fails authentication; h2's is never sent. Every
+    // main ranking completed, so the run itself is complete.
+    assert_eq!(calls.into_inner(), ["h1 true", "h2 true", "h1 false"]);
+    assert_eq!(report.run_status, RunStatus::Complete);
+    let ablation = report.baselines.unwrap().context_ablation.unwrap();
+    assert_eq!((ablation.arm_failures, ablation.skipped_for_budget), (1, 1));
+}
+
+#[test]
+fn the_harm_card_explains_why_zero_harmful_outcomes_is_not_enough() {
+    use skillranker::evaluation::batch::execute_labeled_frame_evaluation;
+    let explain = |n: usize, harmful: usize| {
+        let mut records = String::new();
+        let mut labels = String::new();
+        for i in 0..n {
+            let suggested = if i < harmful { "s_wrong" } else { "s_right" };
+            records.push_str(
+                &(json!({"schema_version": 1,
+                    "key": {"frame_id": "f", "family_id": format!("fam-{i}"),
+                            "case_id": format!("c{i}"), "replicate": 0, "policy_id": "p"},
+                    "split": "holdout", "prompt_summary": "request", "decision": "ranked",
+                    "suggested_skills": [suggested]})
+                .to_string()
+                    + "\n"),
+            );
+            labels.push_str(
+                &(json!({"schema_version": 1, "case_id": format!("c{i}"), "revision": 1,
+                        "acceptable_skills": ["s_right"], "adjudicator": "judge",
+                        "created_at_unix_ms": 1u64})
+                .to_string()
+                    + "\n"),
+            );
+        }
+        let mut report = execute_labeled_frame_evaluation(
+            Cursor::new(records.into_bytes()),
+            Cursor::new(labels.into_bytes()),
+            None,
+            0,
+        )
+        .unwrap();
+        report.explain();
+        report
+            .explanation
+            .unwrap()
+            .quantities
+            .into_iter()
+            .find(|q| q.name == "harmful_outcome_rate_upper_95")
+            .unwrap()
+    };
+    // Zero of 18: the bound is recomputed, not copied, and says what would change it.
+    let card = explain(18, 0);
+    let expected = 1.0 - 0.05f64.powf(1.0 / 18.0);
+    assert!(
+        (card.value.unwrap() - expected).abs() < 1e-9,
+        "{:?}",
+        card.value
+    );
+    let change = card.would_change.unwrap();
+    assert!(
+        change.contains("Zero of 18") && change.contains("59"),
+        "{change}"
+    );
+    // With harmful outcomes the exact bound can never fall below k / n.
+    let card = explain(100, 1);
+    assert!(card.equation.contains("Clopper-Pearson"));
+    assert!(
+        card.value.unwrap() > 0.01 && card.value.unwrap() < 0.05,
+        "{:?}",
+        card.value
+    );
+}
+
+#[test]
+fn a_case_any_policy_cannot_score_leaves_every_policy() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, execute_live_frame_evaluation,
+    };
+    use skillranker::pipeline::{RerankEvidence, StageEvidence, WideEvidence};
+    let ids = ["scored", "unscorable"];
+    let roster = std::collections::BTreeSet::from(["s_alpha".to_owned()]);
+    let report = execute_live_frame_evaluation(
+        ids.iter().map(|id| live_case(id)).collect(),
+        live_labels(&ids),
+        None,
+        &roster,
+        LiveBatchLimits {
+            max_requests: 100,
+            max_runtime_ms: 60_000,
+            attempts_per_case: 4,
+            fit_threshold: 0.3,
+            gate_threshold: 0.3,
+            robustness_variants: false,
+        },
+        &EntryClock::capture().unwrap(),
+        0,
+        |_| Ok(None),
+        |case| LiveRankOutcome {
+            decision: "ranked".into(),
+            suggested_skills: vec!["s_alpha".into()],
+            http_attempts: 2,
+            evidence: Some(StageEvidence {
+                admitted: vec!["s_alpha".into()],
+                quill_ranked: false,
+                // The Quill pass could not run for the second case.
+                lexical: (case.key.case_id == "scored").then(|| vec!["s_alpha".to_owned()]),
+                lexical_elapsed_ms: 0,
+                wide: Some(WideEvidence {
+                    needs_skill: 0.9,
+                    none_probability: 0.1,
+                    low_need: false,
+                    shortlist: vec![("s_alpha".into(), 0.8)],
+                    intrinsic_shortlist: vec!["s_alpha".into()],
+                }),
+                rerank: Some(RerankEvidence {
+                    none_probability: 0.1,
+                    candidates: vec![("s_alpha".into(), 0.8, 0.9)],
+                }),
+            }),
+            ..LiveRankOutcome::default()
+        },
+    )
+    .unwrap();
+    let baselines = report.baselines.unwrap();
+    assert!(!baselines.complete);
+    assert_eq!(
+        (baselines.shared_cohort_cases, baselines.excluded_unscorable),
+        (1, 1)
+    );
+    // Every policy, not only quill-only, is scored on the one shared case.
+    for policy in &baselines.policies {
+        assert_eq!(
+            (policy.evaluated_cases, policy.not_evaluated_cases),
+            (1, 1),
+            "{}",
+            policy.policy
+        );
+        assert_eq!(policy.mean_loss, Some(0.0), "{}", policy.policy);
+    }
+}
+
+#[test]
+fn robustness_variants_report_decision_changes_on_leftover_budget() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, VariantKind, execute_live_frame_evaluation,
+    };
+    let case = |id: &str| -> skillranker::evaluation::batch::LiveEvaluationCase {
+        serde_json::from_value(json!({
+            "schema_version": 1,
+            "key": {"frame_id": "f", "family_id": format!("fam-{id}"), "case_id": id,
+                    "replicate": 0, "policy_id": "p"},
+            "split": "holdout",
+            "context": {"current_request": {"event_id": "e", "text": "profile the slow endpoint"},
+                        "events": []}
+        }))
+        .unwrap()
+    };
+    let ids = ["a", "b"];
+    let run = |max_requests: usize| {
+        let calls = std::cell::RefCell::new(0usize);
+        let report = execute_live_frame_evaluation(
+            ids.iter().map(|id| case(id)).collect(),
+            live_labels(&ids),
+            None,
+            &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+            LiveBatchLimits {
+                max_requests,
+                max_runtime_ms: 60_000,
+                attempts_per_case: 4,
+                fit_threshold: 0.3,
+                gate_threshold: 0.3,
+                robustness_variants: true,
+            },
+            &EntryClock::capture().unwrap(),
+            0,
+            |_| Ok(None),
+            |case| {
+                *calls.borrow_mut() += 1;
+                let text = case.context["current_request"]["text"].as_str().unwrap();
+                // Hostile text lures the selector to a decoy; distraction makes
+                // it abstain; whitespace changes nothing.
+                let suggested = if text.contains("sr-decoy-skill") {
+                    vec!["s_decoy".to_owned()]
+                } else if text.contains("lighthouse") {
+                    vec![]
+                } else {
+                    vec!["s_alpha".to_owned()]
+                };
+                LiveRankOutcome {
+                    decision: if suggested.is_empty() {
+                        "abstain"
+                    } else {
+                        "ranked"
+                    }
+                    .into(),
+                    suggested_skills: suggested,
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            },
+        )
+        .unwrap();
+        (report, calls.into_inner())
+    };
+    let (report, calls) = run(100);
+    // Two main rankings, then three variants of each.
+    assert_eq!(calls, 8);
+    assert_eq!(report.accounting.http_attempts, 16);
+    let robustness = report.baselines.unwrap().robustness.unwrap();
+    let score = |kind| {
+        robustness
+            .variants
+            .iter()
+            .find(|score| score.kind == Some(kind))
+            .unwrap()
+            .clone()
+    };
+    let whitespace = score(VariantKind::EquivalentWhitespace);
+    assert_eq!((whitespace.cases, whitespace.top1_changed), (2, 0));
+    let distraction = score(VariantKind::LongDistraction);
+    assert_eq!((distraction.top1_changed, distraction.hit_lost), (2, 2));
+    let hostile = score(VariantKind::HostileInstruction);
+    assert_eq!(
+        (hostile.top1_changed, hostile.hit_lost, hostile.hit_gained),
+        (2, 2, 0)
+    );
+    assert!(
+        robustness
+            .not_computed
+            .iter()
+            .any(|note| note.starts_with("decoy"))
+    );
+    // Variants never enter the main report's denominators.
+    assert_eq!(report.completeness.cases_requested, 2);
+    assert_eq!(report.loss_summary.attempted_cases, 2);
+    // A cap that fits the main rankings and one variant leaves the rest unsent.
+    let (report, calls) = run(9);
+    assert_eq!(calls, 3);
+    let robustness = report.baselines.unwrap().robustness.unwrap();
+    let not_run: usize = robustness.variants.iter().map(|score| score.not_run).sum();
+    assert_eq!(not_run, 5);
+    assert_eq!(report.run_status, RunStatus::Complete);
 }

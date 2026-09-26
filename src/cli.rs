@@ -13,9 +13,9 @@ use std::ffi::OsString;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
-const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
+const HELP: &str = "SkillRanker — powered by TypeSafe.ai Jev\n\nUsage: sr [rank] [--context FILE | --transcript FILE --harness NAME | --session PATH | --latest]\n                 [--roster FILE] [--require-skill ID] [--dry-run [--shortlist-ids ID,...]]\n                 [--offline | --allow-network] [--json | --table]\n                 [--top N] [--shortlist M] [--gate FLOAT] [--fits FLOAT]\n                 [--explain] [--why-not ID] [--cursor TOKEN] [--no-tools] [--no-cache]\n                 [--save-case FILE]\n       sr doctor [--json | --table] [--offline | --allow-network]\n       sr doctor --config [--json | --table] [--top N] [--shortlist N]\n       sr roster [--json] [--limit N] [--cursor TOKEN]\n       sr roster --snapshot FILE | --diff FILE\n       sr capabilities [--json]\n       sr demo --case <useful|none|explicit|unavailable> [--json | --table]\n       sr replay FILE [--policy FILE] [--compare-policy FILE] [--json | --table]\n       sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n       sr feedback <EVENT_ID> --skill ID [--instead ID] [--verdict <useful|not-useful|unknown>] [--reason CODE] [--provenance TEXT] [--expected-version GEN] [--dir DIR] [--json]\n       sr ledger <init|migrate|status|prune|clear> [--before TIME] [--apply] [--json]\n       sr observe [--context FILE | --transcript FILE --harness NAME | --session PATH] [--branch NAME] [--roster FILE] [--dir DIR] [--json]\n       sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n       sr hook <claude> [--shadow] [--offline | --allow-network] [--dir DIR]\n       sr install-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr uninstall-hook <claude> [--settings FILE] [--target-dir DIR] [--apply] [--json]\n       sr --help | --version\n\nRank the next step of an agent session using TypeSafe Jev.\nRequires your own TypeSafe API key (TYPESAFE_API_KEY) and network consent (--allow-network).\n";
 
-const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
+const EVAL_HELP: &str = "sr eval --dataset FILE [--allow-network] [--max-runtime-ms MS] [--timeout-ms MS] [--policy FILE] [--compare-policy FILE] [--explain] [--json | --table]\n       sr eval --dataset FRAME --labels FILE [--sample-size N [--seed S]] [--online --allow-network --max-requests N [--max-runtime-ms MS] [--robustness]] [--explain] [--json | --table]\n\nEvaluate recorded or synthetic replay batches against local or comparison policies with bounded runtime and explicit accounting.\nWith --labels, score a labeled case frame against independent judgments, optionally over a stratified sample frozen before labels are joined.\n";
 
 const STATS_HELP: &str = "sr stats [--since DURATION] [--by-skill] [--dir DIR] [--json | --table]\n\nReport observation and operational metrics across honest cohorts (evaluations, suggestions, abstentions, latency, loads, judgments, tokens, and cost).\n";
 
@@ -345,6 +345,13 @@ fn command() -> Command {
                         .long("online")
                         .help("Rank the labeled cases fresh with Jev (needs network authorization and --max-requests)")
                         .requires("labels")
+                        .action(ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("robustness")
+                        .long("robustness")
+                        .help("Also rank whitespace, distraction and hostile-instruction variants of each judged case on leftover budget")
+                        .requires("online")
                         .action(ArgAction::SetTrue),
                 )
                 .arg(
@@ -2890,7 +2897,10 @@ fn eval_command(clock: &EntryClock, eval_matches: &clap::ArgMatches) -> Result<S
         return eval_frame_command(clock, eval_matches, dataset_str, labels_str);
     }
     // A live batch ranks labeled requests fresh; a replay dataset has none.
-    if eval_matches.get_flag("online") || eval_matches.get_one::<String>("max-requests").is_some() {
+    if eval_matches.get_flag("online")
+        || eval_matches.get_one::<String>("max-requests").is_some()
+        || eval_matches.get_flag("robustness")
+    {
         return Err((
             2,
             "invalid-usage",
@@ -3035,11 +3045,13 @@ fn eval_frame_command(
     if eval_matches.get_flag("online") {
         return eval_live_command(clock, eval_matches, dataset_str, labels_str, sampling);
     }
-    if eval_matches.get_one::<String>("max-requests").is_some() {
+    if eval_matches.get_one::<String>("max-requests").is_some()
+        || eval_matches.get_flag("robustness")
+    {
         return Err((
             2,
             "invalid-usage",
-            "--max-requests caps a live batch; add --online".into(),
+            "--max-requests and --robustness apply to a live batch; add --online".into(),
         ));
     }
     if eval_matches.get_one::<String>("max-runtime-ms").is_some() {
@@ -3184,6 +3196,8 @@ fn eval_live_command(
         max_runtime_ms,
         attempts_per_case: crate::limits::DEFAULT_HTTP_ATTEMPTS as usize,
         fit_threshold: config.effective().fits(),
+        gate_threshold: config.effective().gate(),
+        robustness_variants: eval_matches.get_flag("robustness"),
     };
     // The preview runs the same pipeline as a stateless dry run: no network.
     let preview_gate = crate::effects::EffectGate::new(
@@ -3294,7 +3308,10 @@ fn preview_live_case(
     let mut unused = crate::pipeline::StageEvidence::default();
     let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused)?;
     let value = document.as_value();
-    if let Some(receipt) = value.get("disclosure") {
+    // Every preview carries a `disclosure` key; it is null when the run ends
+    // locally, which must fall through to the local decision below rather
+    // than count as a receipt (or admit a local `unavailable`).
+    if let Some(receipt) = value.get("disclosure").filter(|receipt| !receipt.is_null()) {
         return Ok(Some(receipt.clone()));
     }
     let local = value.get("local_decision").unwrap_or(value);
@@ -3325,6 +3342,10 @@ fn rank_live_case(
                 decision: "unavailable".into(),
                 error_kind: Some(kind.to_owned()),
                 elapsed_ms: elapsed(),
+                // Candidates are admitted just before the first request, so a
+                // run that got that far may have sent some without reporting
+                // them: its attempts are unknown, never zero.
+                attempts_unknown: !evidence.admitted.is_empty(),
                 ..LiveRankOutcome::default()
             };
         }
@@ -3351,6 +3372,8 @@ fn rank_live_case(
         error_kind: value["error"]["kind"].as_str().map(str::to_owned),
         elapsed_ms: elapsed(),
         evidence: Some(evidence),
+        // The decision document reports its own usage.
+        attempts_unknown: false,
     }
 }
 
