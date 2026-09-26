@@ -50,6 +50,15 @@ Receipt metrics must strictly reflect the payload generated during the same sing
 - Sum of `categories[*].redaction_count == receipt.total_redactions`
 - Category-level included counts strictly match the element counts in `payload` (e.g., non-tool messages, tool messages, project signal items, session state items).
 
+Parity is with the rendered context, before each Jev stage fits it to its
+request budget. The wide and rerank builders may then drop the oldest recent
+messages (reported separately as `trimming.dropped_messages`), and rerank adds
+shortlisted skill descriptions and excerpts that no receipt counts. A receipt
+therefore bounds what the context offers a stage, not the exact bytes a stage
+sends; each final request is still redaction-scanned before sending. The live
+evaluation preflight binds each send to its previewed wide request by digest
+and records those requests' exact byte totals (`wide_request_bytes`).
+
 ### Invariant 4: Profile and Flag Conformance
 - When `context_profile == ContextProfile::Minimal`:
   - `tool_events.included_count == 0`
@@ -64,8 +73,8 @@ Receipt metrics must strictly reflect the payload generated during the same sing
 - It provides complete transparency regarding data disclosure without widening attack surfaces or exposing developer environment state.
 
 ### Invariant 6: Upper Bound Across Stage Requests
-The receipt describes the rendered context, checked by Invariant 3 against the
-payload of the same render. Each provider request is then built from that payload.
+The receipt describes the rendered context, with the parity Invariant 3 defines
+against the payload of the same render. Each provider request is then built from that payload.
 When a request would exceed the serialized request bound, the wide and rerank
 builders drop the oldest `recent_messages`, one at a time, until it fits. They never
 add, reorder or rewrite context.
@@ -81,10 +90,9 @@ add, reorder or rewrite context.
   descriptions and, for rerank, body excerpts. The receipt's five categories do not
   cover them. That text is redacted and scanned with the rest of each request
   (`Redactor::inspect_payload` on the final bytes).
-- A live evaluation batch's frozen `disclosure_preflight` is a dry-run of each case:
-  wide stage only, without shortlist IDs. The live ranking renders again. Project
-  signals such as dirty paths can differ between the preview and the send, so the
-  preflight describes the previewed context, not a binding on the later request.
+- A live evaluation batch's frozen `disclosure_preflight` previews each case's wide
+  request, and each live send is bound to that preview by digest (see the note
+  under Invariant 3).
 
 ## 3. Data Model and API
 
