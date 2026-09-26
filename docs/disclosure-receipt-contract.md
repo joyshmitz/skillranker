@@ -50,6 +50,15 @@ Receipt metrics must strictly reflect the payload generated during the same sing
 - Sum of `categories[*].redaction_count == receipt.total_redactions`
 - Category-level included counts strictly match the element counts in `payload` (e.g., non-tool messages, tool messages, project signal items, session state items).
 
+Parity is with the rendered context, before each Jev stage fits it to its
+request budget. The wide and rerank builders may then drop the oldest recent
+messages (reported separately as `trimming.dropped_messages`), and rerank adds
+shortlisted skill descriptions and excerpts that no receipt counts. A receipt
+therefore bounds what the context offers a stage, not the exact bytes a stage
+sends; each final request is still redaction-scanned before sending. The live
+evaluation preflight binds each send to its previewed wide request by digest
+and records those requests' exact byte totals (`wide_request_bytes`).
+
 ### Invariant 4: Profile and Flag Conformance
 - When `context_profile == ContextProfile::Minimal`:
   - `tool_events.included_count == 0`
