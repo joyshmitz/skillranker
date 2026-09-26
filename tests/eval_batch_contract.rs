@@ -250,6 +250,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             attempts_per_case: 4,
             fit_threshold: 0.3,
             gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -298,6 +299,7 @@ fn the_runtime_cap_stops_scheduling_halfway_and_reports_unfinished_cases() {
             attempts_per_case: 4,
             fit_threshold: 0.3,
             gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -335,6 +337,7 @@ fn a_refused_disclosure_preview_is_never_sent_and_the_preflight_is_frozen_first(
                 attempts_per_case: 4,
                 fit_threshold: 0.3,
                 gate_threshold: 0.3,
+                robustness_variants: false,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -444,6 +447,7 @@ fn baselines_score_every_policy_on_the_same_judged_cohort_from_one_runs_answers(
             attempts_per_case: 4,
             fit_threshold: 0.3,
             gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -740,6 +744,7 @@ fn context_ablation_ranks_history_cases_twice_within_the_caps() {
                 attempts_per_case: 4,
                 fit_threshold: 0.3,
                 gate_threshold: 0.3,
+                robustness_variants: false,
             },
             &EntryClock::capture().unwrap(),
             0,
@@ -844,6 +849,7 @@ fn live_run(
             attempts_per_case: 4,
             fit_threshold: 0.3,
             gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -1160,6 +1166,7 @@ fn a_case_any_policy_cannot_score_leaves_every_policy() {
             attempts_per_case: 4,
             fit_threshold: 0.3,
             gate_threshold: 0.3,
+            robustness_variants: false,
         },
         &EntryClock::capture().unwrap(),
         0,
@@ -1206,4 +1213,107 @@ fn a_case_any_policy_cannot_score_leaves_every_policy() {
         );
         assert_eq!(policy.mean_loss, Some(0.0), "{}", policy.policy);
     }
+}
+
+#[test]
+fn robustness_variants_report_decision_changes_on_leftover_budget() {
+    use skillranker::evaluation::batch::{
+        LiveBatchLimits, LiveRankOutcome, VariantKind, execute_live_frame_evaluation,
+    };
+    let case = |id: &str| -> skillranker::evaluation::batch::LiveEvaluationCase {
+        serde_json::from_value(json!({
+            "schema_version": 1,
+            "key": {"frame_id": "f", "family_id": format!("fam-{id}"), "case_id": id,
+                    "replicate": 0, "policy_id": "p"},
+            "split": "holdout",
+            "context": {"current_request": {"event_id": "e", "text": "profile the slow endpoint"},
+                        "events": []}
+        }))
+        .unwrap()
+    };
+    let ids = ["a", "b"];
+    let run = |max_requests: usize| {
+        let calls = std::cell::RefCell::new(0usize);
+        let report = execute_live_frame_evaluation(
+            ids.iter().map(|id| case(id)).collect(),
+            live_labels(&ids),
+            None,
+            &std::collections::BTreeSet::from(["s_alpha".to_owned()]),
+            LiveBatchLimits {
+                max_requests,
+                max_runtime_ms: 60_000,
+                attempts_per_case: 4,
+                fit_threshold: 0.3,
+                gate_threshold: 0.3,
+                robustness_variants: true,
+            },
+            &EntryClock::capture().unwrap(),
+            0,
+            |_| Ok(None),
+            |case| {
+                *calls.borrow_mut() += 1;
+                let text = case.context["current_request"]["text"].as_str().unwrap();
+                // Hostile text lures the selector to a decoy; distraction makes
+                // it abstain; whitespace changes nothing.
+                let suggested = if text.contains("sr-decoy-skill") {
+                    vec!["s_decoy".to_owned()]
+                } else if text.contains("lighthouse") {
+                    vec![]
+                } else {
+                    vec!["s_alpha".to_owned()]
+                };
+                LiveRankOutcome {
+                    decision: if suggested.is_empty() {
+                        "abstain"
+                    } else {
+                        "ranked"
+                    }
+                    .into(),
+                    suggested_skills: suggested,
+                    http_attempts: 2,
+                    ..LiveRankOutcome::default()
+                }
+            },
+        )
+        .unwrap();
+        (report, calls.into_inner())
+    };
+    let (report, calls) = run(100);
+    // Two main rankings, then three variants of each.
+    assert_eq!(calls, 8);
+    assert_eq!(report.accounting.http_attempts, 16);
+    let robustness = report.baselines.unwrap().robustness.unwrap();
+    let score = |kind| {
+        robustness
+            .variants
+            .iter()
+            .find(|score| score.kind == Some(kind))
+            .unwrap()
+            .clone()
+    };
+    let whitespace = score(VariantKind::EquivalentWhitespace);
+    assert_eq!((whitespace.cases, whitespace.top1_changed), (2, 0));
+    let distraction = score(VariantKind::LongDistraction);
+    assert_eq!((distraction.top1_changed, distraction.hit_lost), (2, 2));
+    let hostile = score(VariantKind::HostileInstruction);
+    assert_eq!(
+        (hostile.top1_changed, hostile.hit_lost, hostile.hit_gained),
+        (2, 2, 0)
+    );
+    assert!(
+        robustness
+            .not_computed
+            .iter()
+            .any(|note| note.starts_with("decoy"))
+    );
+    // Variants never enter the main report's denominators.
+    assert_eq!(report.completeness.cases_requested, 2);
+    assert_eq!(report.loss_summary.attempted_cases, 2);
+    // A cap that fits the main rankings and one variant leaves the rest unsent.
+    let (report, calls) = run(9);
+    assert_eq!(calls, 3);
+    let robustness = report.baselines.unwrap().robustness.unwrap();
+    let not_run: usize = robustness.variants.iter().map(|score| score.not_run).sum();
+    assert_eq!(not_run, 5);
+    assert_eq!(report.run_status, RunStatus::Complete);
 }
