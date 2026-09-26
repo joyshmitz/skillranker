@@ -809,14 +809,22 @@ pub struct LiveBatchLimits {
 }
 
 /// What a live batch will disclose, frozen before its first request: every
-/// case to be sent was previewed locally with no network, and a case whose
-/// preview was refused is never sent.
+/// case to be sent was previewed locally with no network, a case whose
+/// preview was refused is never sent, and each case's wide request goes out
+/// only if it is byte-identical to its preview.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DisclosurePreflight {
+    /// What this preflight covers and what it does not.
+    #[serde(default)]
+    pub scope: String,
     pub cases_checked: usize,
     pub cases_refused: usize,
     /// Cases whose preview ends locally, so a live run sends nothing for them.
     pub cases_without_request: usize,
+    /// Exact bytes of every previewed wide request, as sent.
+    #[serde(default)]
+    pub wide_request_bytes: u64,
+    /// The rendered context before per-stage trimming (the receipt's figure).
     pub disclosed_bytes: u64,
     pub total_redactions: u64,
     pub total_truncated: u64,
@@ -935,6 +943,7 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
                     Some(receipt) => {
                         let count = |name: &str| receipt[name].as_u64().unwrap_or(0);
                         frozen.disclosed_bytes += count("disclosed_bytes");
+                        frozen.wide_request_bytes += count("wide_request_bytes");
                         frozen.total_redactions += count("total_redactions");
                         frozen.total_truncated += count("total_truncated");
                         frozen.total_omitted += count("total_omitted");
@@ -957,6 +966,12 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         }
     }
     frozen.receipts_digest = hasher.finalize().to_hex().to_string();
+    frozen.scope = "Wide requests exactly as previewed, each bound to its send by digest; \
+        receipt counts describe the context before per-stage trimming. Rerank requests (which \
+        add shortlisted skill descriptions and excerpts), context-ablation arms (a subset of \
+        the previewed context) and robustness variants (fixed synthetic text added) are not \
+        previewed."
+        .into();
     run.preflight = Some(frozen);
 
     let mut executed = Vec::with_capacity(admitted.len());
@@ -1012,6 +1027,18 @@ pub fn execute_live_frame_evaluation<L: BufRead>(
         accounting.unknown_usage_attempts += unknown_usage;
         accounting.input_tokens += outcome.input_tokens;
         accounting.output_tokens += outcome.output_tokens;
+        // The request changed after its preview (for example a newly dirtied
+        // path), so it was withheld: the case was never evaluated, and the
+        // selector is not charged for it.
+        if outcome.error_kind.as_deref() == Some("superseded") {
+            run.skipped.push((
+                record.key,
+                CaseExecutionStatus::NotEstimable {
+                    reason: "request changed since its disclosure preview; not sent".into(),
+                },
+            ));
+            continue;
+        }
         run.elapsed_ms
             .insert(record.key.clone(), outcome.elapsed_ms);
         production_elapsed.push(

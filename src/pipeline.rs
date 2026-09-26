@@ -215,6 +215,9 @@ struct Progress {
     supplied_context: Option<Vec<u8>>,
     /// Per-stage answers captured for an evaluation run; `None` otherwise.
     stage_evidence: Option<StageEvidence>,
+    /// For an evaluation send bound to its preview: the BLAKE3 digest its
+    /// wide request must still have when it is about to be sent.
+    expected_wide_digest: Option<[u8; 32]>,
 }
 
 /// Identity and cost carried out of a failing run, so an unavailable event can
@@ -387,7 +390,7 @@ pub async fn execute_pipeline(
     args: RankArgs,
     transport: Option<&dyn JevTransport>,
 ) -> Result<OutputDocument, PipelineFailure> {
-    execute_pipeline_supplied(invocation, cx, args, transport, None, None).await
+    execute_pipeline_supplied(invocation, cx, args, transport, None, None, None).await
 }
 
 /// Rank one normalized context already held in memory, such as a case of an
@@ -401,6 +404,7 @@ pub async fn execute_pipeline_with_context(
     transport: Option<&dyn JevTransport>,
     context: Vec<u8>,
     evidence: &mut StageEvidence,
+    expected_wide_digest: Option<[u8; 32]>,
 ) -> Result<OutputDocument, PipelineFailure> {
     execute_pipeline_supplied(
         invocation,
@@ -409,6 +413,7 @@ pub async fn execute_pipeline_with_context(
         transport,
         Some(context),
         Some(evidence),
+        expected_wide_digest,
     )
     .await
 }
@@ -508,6 +513,7 @@ async fn execute_pipeline_supplied(
     transport: Option<&dyn JevTransport>,
     supplied_context: Option<Vec<u8>>,
     evidence: Option<&mut StageEvidence>,
+    expected_wide_digest: Option<[u8; 32]>,
 ) -> Result<OutputDocument, PipelineFailure> {
     let clock = &invocation.clock();
     // Every effect restriction comes from the gate; `args.dry_run` can only add
@@ -541,6 +547,7 @@ async fn execute_pipeline_supplied(
     let mut progress = Progress {
         supplied_context,
         stage_evidence: evidence.is_some().then(StageEvidence::default),
+        expected_wide_digest,
         ..Progress::default()
     };
     let result = rank_once(invocation, clock, cx, args, transport, &mut progress).await;
@@ -2120,16 +2127,6 @@ async fn rank_once(
                 "The context could not be rendered within its bounds",
             ),
         })?;
-    // The receipt is the disclosure account shown to the user; a receipt that
-    // disagrees with the bytes about to be sent fails closed before any request.
-    disclosure_receipt
-        .verify_against_payload(&rendered_context)
-        .map_err(|_| {
-            failure(
-                ErrorKind::UnsupportedInput,
-                "The disclosure receipt does not match the rendered context",
-            )
-        })?;
     // Report the rendered input truthfully. Essential content that is missing,
     // or a latest request that had to be truncated, cannot support a ranked
     // result, so nothing is sent.
@@ -2675,6 +2672,16 @@ async fn rank_once(
                     None => opened,
                 }
             });
+            // An evaluation send bound to its disclosure preview goes out only
+            // if its final wide request is byte-identical to what was previewed.
+            if let Some(expected) = progress.expected_wide_digest
+                && *blake3::hash(wide_builder.bytes()).as_bytes() != expected
+            {
+                return Err(failure(
+                    ErrorKind::Superseded,
+                    "The request changed since its disclosure preview; not sent",
+                ));
+            }
             let stage = provider_stage(
                 active,
                 RankingStage::Wide,

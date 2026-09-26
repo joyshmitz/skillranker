@@ -3238,6 +3238,7 @@ fn eval_live_command(
             save_case: None,
         }
     };
+    let previews = std::cell::RefCell::new(PreviewedRequests::new());
     let report = crate::evaluation::batch::execute_live_frame_evaluation(
         cases,
         labels,
@@ -3246,8 +3247,26 @@ fn eval_live_command(
         limits,
         clock,
         now_unix_ms,
-        |case| preview_live_case(clock, per_case_ms, case_args(case, preview_gate), case),
-        |case| rank_live_case(clock, per_case_ms, case_args(case, gate), case),
+        |case| {
+            preview_live_case(
+                clock,
+                per_case_ms,
+                case_args(case, preview_gate),
+                case,
+                &previews,
+            )
+        },
+        |case| {
+            // Only the previewed context is bound; an ablation arm or a
+            // robustness variant of the same case is a different request.
+            let context = serde_json::to_vec(&case.context).unwrap_or_default();
+            let expected = previews
+                .borrow()
+                .get(&case.key.case_id)
+                .filter(|(previewed, _)| *previewed == context)
+                .map(|(_, digest)| *digest);
+            rank_live_case(clock, per_case_ms, case_args(case, gate), case, expected)
+        },
     )
     .map_err(eval_error)?;
     render_eval_report(report, eval_matches)
@@ -3261,6 +3280,7 @@ fn run_case_pipeline(
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
     evidence: &mut crate::pipeline::StageEvidence,
+    expected_wide_digest: Option<[u8; 32]>,
 ) -> Result<OutputDocument, &'static str> {
     let remaining = batch.remaining_until_expiry().as_millis();
     let total = per_case_ms.min(remaining);
@@ -3291,6 +3311,7 @@ fn run_case_pipeline(
                     None,
                     context,
                     evidence,
+                    expected_wide_digest,
                 ),
             )
         });
@@ -3304,15 +3325,31 @@ fn preview_live_case(
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
+    previews: &std::cell::RefCell<PreviewedRequests>,
 ) -> Result<Option<Value>, String> {
     let mut unused = crate::pipeline::StageEvidence::default();
-    let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused)?;
+    let document = run_case_pipeline(batch, per_case_ms, args, case, &mut unused, None)?;
     let value = document.as_value();
+    // The exact wide request this preview would send binds the live send.
+    let wide = value["provider_request"]["stages"]
+        .as_array()
+        .and_then(|stages| stages.iter().find(|stage| stage["stage"] == "wide"))
+        .and_then(|stage| stage["request"].as_str());
+    if let (Some(request), Ok(context)) = (wide, serde_json::to_vec(&case.context)) {
+        previews.borrow_mut().insert(
+            case.key.case_id.clone(),
+            (context, *blake3::hash(request.as_bytes()).as_bytes()),
+        );
+    }
     // Every preview carries a `disclosure` key; it is null when the run ends
     // locally, which must fall through to the local decision below rather
     // than count as a receipt (or admit a local `unavailable`).
     if let Some(receipt) = value.get("disclosure").filter(|receipt| !receipt.is_null()) {
-        return Ok(Some(receipt.clone()));
+        let mut receipt = receipt.clone();
+        if let (Some(object), Some(request)) = (receipt.as_object_mut(), wide) {
+            object.insert("wide_request_bytes".into(), Value::from(request.len()));
+        }
+        return Ok(Some(receipt));
     }
     let local = value.get("local_decision").unwrap_or(value);
     match local["decision"].as_str() {
@@ -3330,12 +3367,20 @@ fn rank_live_case(
     per_case_ms: u64,
     args: crate::pipeline::RankArgs,
     case: &crate::evaluation::batch::LiveEvaluationCase,
+    expected_wide_digest: Option<[u8; 32]>,
 ) -> crate::evaluation::batch::LiveRankOutcome {
     use crate::evaluation::batch::LiveRankOutcome;
     let started = std::time::Instant::now();
     let elapsed = || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let mut evidence = crate::pipeline::StageEvidence::default();
-    let document = match run_case_pipeline(batch, per_case_ms, args, case, &mut evidence) {
+    let document = match run_case_pipeline(
+        batch,
+        per_case_ms,
+        args,
+        case,
+        &mut evidence,
+        expected_wide_digest,
+    ) {
         Ok(document) => document,
         Err(kind) => {
             return LiveRankOutcome {
@@ -3376,6 +3421,10 @@ fn rank_live_case(
         attempts_unknown: false,
     }
 }
+
+/// Each previewed case's context bytes and the BLAKE3 digest of the exact wide
+/// request its preview would send.
+type PreviewedRequests = std::collections::BTreeMap<String, (Vec<u8>, [u8; 32])>;
 
 /// The longest live or replay batch deadline accepted: one day.
 const MAX_EVAL_RUNTIME_MS: u64 = 86_400_000;

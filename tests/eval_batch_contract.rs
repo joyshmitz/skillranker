@@ -1317,3 +1317,37 @@ fn robustness_variants_report_decision_changes_on_leftover_budget() {
     assert_eq!(not_run, 5);
     assert_eq!(report.run_status, RunStatus::Complete);
 }
+
+#[test]
+fn a_request_that_changed_since_its_preview_is_not_estimable_not_a_failure() {
+    use skillranker::evaluation::batch::LiveRankOutcome;
+    let report = live_run(vec![live_case("a"), live_case("b")], 100, |case| {
+        if case.key.case_id == "a" {
+            LiveRankOutcome {
+                decision: "ranked".into(),
+                suggested_skills: vec!["s_alpha".into()],
+                http_attempts: 2,
+                ..LiveRankOutcome::default()
+            }
+        } else {
+            // The pipeline withheld it before any send.
+            LiveRankOutcome {
+                decision: "unavailable".into(),
+                error_kind: Some("superseded".into()),
+                ..LiveRankOutcome::default()
+            }
+        }
+    });
+    assert_eq!(report.loss_summary.operational_failures, 0);
+    assert_eq!(report.loss_summary.attempted_cases, 1);
+    assert_eq!(report.loss_summary.not_estimable_cases, 1);
+    let b = report
+        .cases
+        .iter()
+        .find(|case| case.case_id == "b")
+        .unwrap();
+    assert!(matches!(
+        &b.status,
+        CaseExecutionStatus::NotEstimable { reason } if reason.contains("disclosure preview")
+    ));
+}
